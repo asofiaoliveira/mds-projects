@@ -1,0 +1,782 @@
+---
+title: "Movies Recommendation"
+author:
+- Ana Sofia Medeiros Oliveira (201503082)
+- Fábio Henrique da Silva Pereira (201506051)
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NA, warning = F, out.width="230px", out.height="230px")
+```
+
+# Introduction
+
+A recommendation system is a system that tries to predict what a user will like or want to buy, for example. Recommendation systems are important as they facilitate the consumers' lives, bringing them the products they want to, well, consume (sometimes even before the user knowing about the product's existence). Recommendation systems have seen their economic worth growing, with some big tech companies registering profit in the order of thousands of millions of dollars due to these systems. [1](https://www.businessinsider.com/netflix-recommendation-engine-worth-1-billion-per-year-2016-6) [2](http://rejoiner.com/resources/amazon-recommendations-secret-selling-online/)
+
+
+In this work, we compare the performance of different recommendation strategies for movies' reviews. To achieve that, we'll be using datasets obtained from RottenTomatoes, a online aggregator of movie and TV show reviews from critics.
+
+In this report, we first describe and preprocess the available data. We also provide some data visualization on some of the most important attributes of the data. Next, we describe the modelling approaches that will be used to build the recommendation systems. We then divide the project in two sections -- recommendation systems using binary ratings and using real ratings. Subsequently, we implement context into these systems, where we consider attributes like the date of the reviews and the genre of the movie. Finally, we give conclusions about the achieved results, shortcomings and possible improvements to this work.
+
+
+
+
+# Data
+
+Two different datasets were used in this work: reviews and movies. As the movies dataset played an auxiliary role in this project, we will only provide insights on the reviews dataset. In respect to the movies dataset, the preprocessing was done when needed.
+
+```{r libraries, message = F}
+library(dplyr)
+library(ggplot2)
+library(recommenderlab)
+library(tibble)
+library(purrr)
+library(tidyr)
+library(lubridate)
+
+movies <- read.csv("movie_info.tsv", sep="\t")
+reviews <- read.csv("reviews.tsv", sep="\t")
+```
+
+## Understanding and Preprocessing
+
+The main dataset is composed by more than 50 thousand instances and 8 different attributes:
+
+* id -- identification number of the movie in question
+* review -- the user's review of the movie
+* rating -- rating that the user gave to the movie
+* fresh -- fresh status of the movie (fresh or rotten)
+* critic -- name of the user
+* top_critic -- if the user is considered to be a top critic or not
+* publisher -- site where the review was published
+* date -- when the review was published
+
+Among these attributes, there were some which had a significant number of missing values. Considering the empty string to be a missing value as well, it can be seen in the next figure the quantity of missing values in each attribute.
+
+
+```{r nas, echo=F, fig.align = "center"}
+nas <- reviews
+nas$review[which(nas$review=="")] = NA
+nas$rating[which(nas$rating=="")] = NA
+nas$critic[which(nas$critic=="")] = NA
+nas$publisher[which(nas$publisher=="")] = NA
+
+nas1 = data.frame(Quantity=0)
+nas1[1,1] = 0 # no NAs
+nas1[2,1] = table(is.na(nas$review))[[2]]
+nas1[3,1] = table(is.na(nas$rating))[[2]]
+nas1[4,1] = 0 # no NAs
+nas1[5,1] = table(is.na(nas$critic))[[2]]
+nas1[6,1] = 0 # no NAs
+nas1[7,1] = table(is.na(nas$publisher))[[2]]
+nas1[8,1] = 0 # no NAs
+
+labels = c("id", "review", "rating", "fresh", "critic", "top_critic", "publisher", "date")
+ggplot(nas1) + 
+  geom_bar(mapping=aes(x = reorder(labels, -nas1[,1]), weight = nas1[,1])) +
+  xlab("Attribute") +
+  ylab("Quantity of NAs")
+```
+
+As we're building a recommendation system, it doesn't make much sense to have users with no name, so we decided to eliminate all the instances that had an empty critic's name (2722 rows).
+
+```{r remove empty critics}
+reviews = reviews[-which(reviews$critic == ""),]
+reviews$critic <- droplevels(reviews$critic)
+```
+
+We also transformed the date to a ready-to-read format.
+
+```{r date, results = 'hide', message = F}
+# this is needed to convert the date
+# don't worry, your enviroment settings are preserved
+lc_time <- Sys.getlocale("LC_TIME")
+Sys.setlocale("LC_TIME","C")
+reviews$date = as.Date(reviews$date, "%B %d, %Y")
+Sys.setlocale("LC_TIME", lc_time)
+```
+
+Subsequently, the ratings presented a very high number of different levels, as these come from different sites and have different scales. We converted all ratings to the 1-5 scale. Note that we can only convert ratings when we are sure about their scale. Because of that, we chose only to convert the ratings which represented a division (numerator/denominator) and the ratings which had letters A through F (except E). We considered the A-F ratings to be a simple 1-5 scale (A is 5, B is 4, and so on). The instances that could not be translated to the 1-5 scale were transformed into NA.
+
+```{r, echo=F}
+
+ratings <- c()
+for(i in 1:nrow(reviews)){
+  split = strsplit(as.character(reviews$rating[i]), "/")[[1]]
+  if(length(split)==2 & nchar(split[1])==1 & nchar(split[2])==1){
+    if(as.numeric(split[1])<=as.numeric(split[2])){ # there were some cases like "5/4"
+      rating <- round((5*as.numeric(split[1]))/as.numeric(split[2]))
+      if(rating == 0)
+        ratings <- c(ratings, 1)
+      else
+        ratings <- c(ratings, rating)
+    }
+    else{
+      ratings <- c(ratings, NA)
+      next
+    }
+  }
+  else if(length(split)==1){
+    if(split[1]=="0")
+      ratings <- c(ratings, 1)
+    else if(grepl("[A-F]",split)){
+      if(grepl("A", split))
+        ratings <- c(ratings, 5)
+      else if(grepl("B", split))
+        ratings <- c(ratings, 4)
+      else if(grepl("C", split))
+        ratings <- c(ratings, 3)
+      else if(grepl("D", split))
+        ratings <- c(ratings, 2)
+      else
+        ratings <- c(ratings, 1)
+    }
+    else{
+      ratings <- c(ratings, NA)
+    }
+  }
+  else{
+    ratings <- c(ratings, NA)
+  }
+}
+
+reviews$rating <- ratings
+
+cat("NAs in attribute \"rating\" after preprocessing:")
+table(is.na(ratings))
+```
+
+
+The reader should be aware that there were some critics that rated the same movie multiple times. To deal with that, we simply took the rounded mean of such ratings. 
+
+
+```{r}
+tmp = reviews %>% group_by(critic, id) %>%
+        summarise(rating=round(mean(rating))) %>% data.frame()
+reviews = reviews %>% select(-rating) %>% merge(tmp, by = c("critic", "id"))
+reviews = reviews[!duplicated(reviews[,c('critic','id')]),]
+```
+
+
+
+Finally, the ratings matrices could be created. We needed both a binary and a real ratings matrix, as we want to test the quality of both systems. To create the matrices, we used two filters in order to consider only the movies and the critics that appear more than a certain number of times.
+
+
+To create the real ratings matrix, the instances that had missing values in the ratings column were omitted as we couldn't be sure of what the recommender would do with those instances. By omitting them we know that the recommender will consider that the user didn't see the movies in question, which is the desired effect since we want to, in theory, predict what rating a user will give to a movie.
+
+
+
+```{r}
+min_ratings <- function(data, filt1=5, filt2=5){
+  
+  a = data %>% group_by(id) %>% summarise(n = n())
+  a = a %>% filter(n > filt1)
+  data = data %>% filter(id %in% a$id)
+  
+  if(nrow(data)==0) return(data)
+  
+  a = data %>% group_by(critic) %>% summarise(n = n())
+  a = a %>% filter(n > filt2)
+  data = data %>% filter(critic %in% a$critic)
+  
+  return(data)
+}
+
+data = min_ratings(reviews) %>% select('critic', 'id', 'rating')
+
+binary <- as(data, "binaryRatingMatrix")
+
+
+data = data %>% na.omit()
+
+real <- as(data, "realRatingMatrix")
+```
+
+Note that we don't use the matrices created here throughout the work, as we built the needed matrices on-the-fly, giving us the opportunity to vary the filters' threshold if needed. Despite these matrices serving only for demonstration and visualization, we in fact use, almost exclusively, these thresholds (more than 5 appearances for movies and for critics) to report our findings.
+
+
+
+# Data Visualization
+
+In this section we visualize both the data after all the preprocessing done and the resulting binary/real matrix.
+
+## Data after preprocessing
+
+```{r visualization, echo=F}
+ggplot(reviews) + geom_bar(aes(x=rating)) + ylab("Quantity of reviews") + xlab("Rating")
+ggplot(reviews) + geom_bar(aes(x=fresh)) + ylab("Quantity of reviews") + xlab("")
+ggplot(reviews) + geom_bar(aes(x=as.logical(top_critic))) + ylab("Quantity of reviews") + xlab("Top critic")
+
+ggplot(reviews) + 
+  geom_histogram(aes(x=date), binwidth = 365) + ylab("Quantity of reviews") + xlab("Year")
+# there are some very early dates for some reason..
+
+ggplot(reviews[which(reviews$date >= as.Date("2000-01-01")),]) + 
+  geom_histogram(aes(x=date), binwidth = 365) + ylab("Quantity of reviews") + xlab("Year after 2000")
+
+cat("Statistical summary of attribute \"date\":\n")
+summary(reviews$date)
+
+cat("\nNumber of different publishers: ", length(levels(reviews$publisher)), "\n")
+cat("Top publishers:")
+head(sort(table(reviews$publisher), dec=TRUE),3)
+
+
+cat("\nNumber of different critics: ", length(levels(reviews$critic)), "\n")
+cat("Top critics:")
+head(sort(table(reviews$critic), dec=TRUE),3)
+```
+
+## Binary ratings matrix
+
+```{r, echo=F, out.width="420px", out.height="420px"}
+cat("Movies with least appearances:\n")
+head(sort(colCounts(binary))); 
+cat("\nMovies with most appearances:\n")
+head(sort(colCounts(binary), dec=TRUE))
+cat("\nUsers with least appearances:\n")
+head(sort(rowCounts(binary)),3); 
+cat("\nUsers with most appearances:\n")
+head(sort(rowCounts(binary), dec=TRUE),3)
+cat("\nNumber of different users (rows): ", length(rowCounts(binary)), "\n")
+cat("Number of different movies (columns): ", length(colCounts(binary)), "\n")
+image(binary)
+```
+
+## Real ratings matrix
+
+```{r, echo=F, out.width="420px", out.height="420px"}
+cat("Movies with least appearances:\n")
+head(sort(colCounts(real))); 
+cat("\nMovies with most appearances:\n")
+head(sort(colCounts(real), dec=TRUE))
+cat("\nUsers with least appearances:\n")
+head(sort(rowCounts(real)),3); 
+cat("\nUsers with most appearances:\n")
+head(sort(rowCounts(real), dec=TRUE),3)
+cat("\nNumber of different users (rows): ", length(rowCounts(real)), "\n")
+cat("Number of different movies (columns): ", length(colCounts(real)), "\n")
+image(real, colorkey=list(at=seq(0, 5, 1), 
+                 labels=list(at=c(0.5, 1.5, 2.5, 3.5, 4.5), 
+                             labels=c("1", "2", "3", "4", "5"))))
+```
+
+
+# Modelling approaches
+
+In this section, we describe the methods used to obtain recommendations. We also show them in action using the 50 critics with most reviews -- 49 to train, 1 to predict -- and the movies with at least 5 appearances among these critics.
+
+We chose not to include the test critic (chosen randomly, Peter Bradshaw) in the training dataset because this is how a real system would work. We do not evaluate the results for the test critic, we merely want to show how the methods work.
+
+Recommender systems can be based in binary ratings -- the critic reviewed or not a movie -- or real ratings -- the score the critic gave a movie. The methods for binary ratings recommend the movies the user is likely to review while the methods for real ratings try to predict the ratings the user will give to different movies and recommend the ones with the highest predicted rating.
+
+We show only the methods for the binary ratings because the methods for real ratings are analogous.
+
+```{r}
+data = reviews %>% select(critic, id, rating)
+a = data %>% group_by(critic) %>% summarise(n = n()) %>% arrange(-n)
+a = a %>% top_n(50, n)
+data = data %>% filter(critic %in% a$critic)
+
+a = data %>% group_by(id) %>% summarise(n = n())
+a = a %>% filter(n > 5)
+data = data %>% filter(id %in% a$id)
+
+crit = "Peter Bradshaw"
+```
+
+```{r, echo=F}
+cat("Movies already seen by Peter Bradshaw:\n")
+```
+
+```{r}
+data %>% filter(critic == crit) %>% select(id) %>% pull %>% sort
+```
+
+
+```{r}
+bm = as(data, "binaryRatingMatrix")
+bm.train <- bm[-which(bm@data@itemsetInfo == crit),]
+peter <- bm[which(bm@data@itemsetInfo == crit),]
+```
+
+
+
+We first show the popular method. This method works by determining the most popular movies among the critics in the training dataset and recommending the movies that appear the most. If the user we are recommending to has already seen a movie, it is removed from the recommendations. 
+
+```{r}
+m1 <- Recommender(bm.train, "POPULAR")
+pred1 <- predict(m1, peter, n = 5)
+```
+
+```{r, echo=F}
+cat("10 most popular movies:\n")
+```
+
+```{r}
+m1@model$topN@itemLabels[m1@model$topN@items[[1]]][1:10]
+```
+
+```{r, echo=F}
+cat("Movies recommended to Peter Bradshaw by POPULAR:\n")
+```
+
+```{r}
+getList(pred1)[[1]]
+```
+
+In our example, the most popular movie is "976" and since the user hasn't seen this movie yet, the algorithm recommends it. The second most popular movie is "1071" but the user has already seen it so it is not recommended. The other 4 recommendations are obtained in the same manner.
+
+
+We move on to the association rules method. With the discovered rules, the method recommends movies that are on the right hand side of rules that have on the left hand side movies reviewed by the user. We use a low support -- $10/|\textrm{DB}|$. [3](http://www.dcc.fc.up.pt/~rpribeiro/aulas/tads1819/material/TADS1819_3-WebMining-RecommenderSys.pdf)
+
+```{r}
+m2 <- Recommender(bm.train, "AR", parameter = list(support = 0.2))
+rule<-getModel(m2)
+```
+
+```{r, echo=F}
+cat("Example rule:\n")
+```
+
+```{r}
+inspect(rule$rule_base[1,])
+```
+
+```{r}
+pred <- predict(m2, peter, n = 5)
+```
+
+```{r, echo=F}
+cat("Movies recommended to Peter Bradshaw by AR:\n")
+```
+
+```{r}
+getList(pred)[[1]]
+```
+
+Above we present a rule as an example. We noticed that this method recommends movies that the user has already reviewed. We were unable to identify the problem so this method will probably give irrelevant recommendations throughout this project.
+
+
+The last method is collaborative filtering (CF). There are two types of CF: user based and item based. 
+
+User based collaborative filtering computes the similarity between critics and then uses the movies reviewed by the k nearest critics to make recommendations for a user. Similariy between critics is computed based on the movies they reviewed. 
+
+Item based collaborative filtering, on the other hand, computes the similarity between movies and uses the k nearest movies to make recommendations for a user. Similarity between movies is based on the critics that reviewed them.
+
+To demonstrate with the reviews dataset, we chose the cosine similarity as the similarity functions.
+
+We present only the movies that each method recommends since the similarity matrices are too big to show.
+
+```{r}
+m3 <- Recommender(bm.train,"IBCF",parameter=list(method = "cosine"))
+pred <- recommenderlab::predict(m3,peter,n=5)
+```
+
+```{r, echo=F}
+cat("Movies recommended to Peter Bradshaw by IBCF:\n")
+```
+
+```{r}
+getList(pred)[[1]]
+```
+
+```{r}
+m4 <- Recommender(bm.train,"UBCF",parameter=list(method = "cosine"))
+pred <- recommenderlab::predict(m4,peter,n=5)
+```
+
+```{r, echo=F}
+cat("Movies recommended to Peter Bradshaw by UBCF:\n")
+```
+```{r}
+getList(pred)[[1]]
+```
+
+As can be verified, only the association rules method gives movie recommendations that the user has already seen. We also note that some movies are recommended by a lot of methods which can mean that these are good recommendations.
+
+
+
+# Recommender System
+
+In this section, we evaluate, for binary and real ratings, the methods explained in the section "Modelling approaches". For that, we implemented some functions to help automate this process:
+
+* evaluation -- given a ratings matrix, the evaluation protocol and the type of matrix, this function will evaluate a pre-chosen list of models and will then return the respective metrics for each of them.
+* recommend -- this procedure will first filter the data and then use the function above with 3 different evaluation protocols (all but one, given 2 and given 4) and return a dataframe with the adequate metrics for each of the protocols.
+* context -- this function does the same as the "recommend" function above but instead of creating recommendation systems for only 1 matrix, it evaluates the models for multiple matrices related to different categories of a given context. This procedure will then average the metrics of all categories that had more than 250 ratings.
+
+We tested each method with different parameters to see which produced the best results. To avoid comparing 10-18 different models, we selected the best model within each method to be representative of that method. This means that despite having, for example, 5 different association rules models, only one of these will be chosen per protocol to be visualized. The best model was chosen based on precision for binary ratings and based on RMSE for real ratings. We chose precision because we think that it's more important to be sure that we're recommending a movie that the user will like than to recommend all the movies that the user will like.
+
+```{r main_function}
+
+evaluation <- function(data, given = -1, type = "binary", debug = F){
+  
+  algorithms <- list(
+    "Popular" = list(name = "POPULAR", parameters = NULL),
+    "AR1" = list(name = "AR", parameters = NULL),
+    "AR2" = list(name = "AR", parameters = list(support = 0.05)),
+    "AR3" = list(name = "AR", parameters = list(support = 0.15)),
+    "AR4" = list(name = "AR", parameters = list(confidence = 1)),
+    "AR5" = list(name = "AR", parameters = list(confidence = 0.5)),
+    "UBCF1" = list(name = "UBCF", parameters = NULL),
+    "UBCF2" = list(name = "UBCF", parameters = list(method = "cosine")),
+    "UBCF3" = list(name = "UBCF", parameters = list(method = "cosine", weighted = F)),
+    "UBCF4" = list(name = "UBCF", parameters = list(method = "cosine", nn = 11)),
+    "UBCF5" = list(name = "UBCF", parameters = list(method = "cosine", nn = 51)),
+    "IBCF1" = list(name = "IBCF", parameters = NULL),
+    "IBCF2" = list(name = "IBCF", parameters = list(method = "cosine")),
+    "IBCF3" = list(name = "IBCF", parameters = list(method = "cosine", normalize_sim_matrix = T)),
+    "IBCF4" = list(name = "IBCF", parameters = list(method = "cosine", k = 11)),
+    "IBCF5" = list(name = "IBCF", parameters = list(method = "cosine", k = 51)),
+    "IBCF6" = list(name = "IBCF", parameters = list(method = "cosine", alpha = 0.1)),
+    "IBCF7" = list(name = "IBCF", parameters = list(method = "cosine", alpha = 0.9))
+  )
+  
+  algorithms_real <- list(
+  "Popular" = list(name = "POPULAR", parameters = NULL),
+  "UBCF1" = list(name = "UBCF", parameters = NULL),
+  "UBCF2" = list(name = "UBCF", parameters = list(nn = 11)),
+  "UBCF3" = list(name = "UBCF", parameters = list(nn = 51)),
+  "IBCF1" = list(name = "IBCF", parameters = NULL),
+  "IBCF2" = list(name = "IBCF", parameters = list(normalize_sim_matrix = T)),
+  "IBCF3" = list(name = "IBCF", parameters = list(k = 11)),
+  "IBCF4" = list(name = "IBCF", parameters = list(k = 51)),
+  "IBCF5" = list(name = "IBCF", parameters = list(alpha = 0.1)),
+  "IBCF6" = list(name = "IBCF", parameters = list(alpha = 0.9))
+  )
+  
+  
+  if(type == "binary"){
+    m <- as(data, "binaryRatingMatrix")
+    scheme <- m %>% evaluationScheme(given = given)
+    results <- recommenderlab::evaluate(scheme, algorithms, n = c(1,2,5), progress = F)
+    
+    if(length(results@.Data) == 0) return(NULL)
+    
+    results_tbl <- data.frame(name=NA,n=NA,
+                            method=NA,
+                            TP=0, FP=0,
+                            FN=0, TN=0,
+                            precision=0,
+                            recall=0,
+                            stringsAsFactors=FALSE)
+    for(i in 1:length(results@.Data)){
+     for(j in 1:3){
+        results_tbl[(i-1)*3+j,1:3] <- c(names(results)[i],
+                                        rownames(results@.Data[[i]]@results[[1]]@cm)[j],
+                                        results[[i]]@method)
+        results_tbl[(i-1)*3+j,4:length(results_tbl)] <- results@.Data[[i]]@results[[1]]@cm[j,]
+      }
+    }
+  }
+  
+  else{
+    m <- as(data, "realRatingMatrix")
+    scheme <- m %>% evaluationScheme(given = given, goodRating = 3)
+    results <- recommenderlab::evaluate(scheme, algorithms_real, type = "ratings", progress = F)
+    
+    if(length(results@.Data) == 0) return(NULL)
+    
+    results_tbl <- data.frame(name=NA, n = NA,
+                            method=NA,
+                            RMSE=0, MSE=0,
+                            MAE=0, 
+                            stringsAsFactors=FALSE)
+    for(i in 1:length(results@.Data)){
+      results_tbl[i,1:3] <- c(names(results)[i],
+                                      NA,
+                                      results[[i]]@method)
+      results_tbl[i,4:length(results_tbl)] <- results@.Data[[i]]@results[[1]]@cm[1,]
+    }
+  }
+  
+  return(results_tbl)
+  
+}
+```
+
+```{r, echo=F}
+recommend <- function(data, type = "binary", filt1 = 5, filt2 = 5, debug = F){
+  
+  data = min_ratings(data, filt1, filt2)
+  
+  if(nrow(data) == 0) return(NULL)
+  
+  r1 = evaluation(data, -1, type)
+  r2 = evaluation(data, 2, type)
+  r3 = evaluation(data, 4, type)
+  
+  if(type == "binary"){
+    r1.models = r1 %>% group_by(method) %>% slice(which.max(precision)) %>% pull(name)
+    r2.models = r2 %>% group_by(method) %>% slice(which.max(precision)) %>% pull(name)
+    r3.models = r3 %>% group_by(method) %>% slice(which.max(precision)) %>% pull(name)
+  }
+  else{
+    r1.models = r1 %>% group_by(method) %>% slice(which.min(RMSE)) %>% pull(name)
+    r2.models = r2 %>% group_by(method) %>% slice(which.min(RMSE)) %>% pull(name)
+    r3.models = r3 %>% group_by(method) %>% slice(which.min(RMSE)) %>% pull(name)
+  }
+  
+  r1 = r1 %>% filter(name %in% r1.models) %>% mutate(protocol = "one")
+  r2 = r2 %>% filter(name %in% r2.models) %>% mutate(protocol = "two")
+  r3 = r3 %>% filter(name %in% r3.models) %>% mutate(protocol = "three")
+  
+  r = rbind(r1,r2,r3)
+  r$protocol = factor(r$protocol, levels = c("one", "two", "three"))
+  
+  return(r)
+}
+
+context <- function(d, type = "binary", filt1 = 5, filt2 = 5, debug = FALSE){
+  # d is a list where the initial dataframe is separated by a factor
+  
+  d = lapply(d, min_ratings, filt1 = filt1, filt2 = filt2) 
+  d = d[lapply(d, nrow) > 250]
+  
+  if(debug) print(names(d))
+  
+  if(debug) cat("nrow(d[[i]]) = ", nrow(d[[1]]), "\n")
+  
+  r1 = evaluation(d[[1]], -1, type, debug = debug)
+  r2 = evaluation(d[[1]], 2, type)
+  r3 = evaluation(d[[1]], 4, type)
+  
+  for(i in seq(2,length(d))){
+    
+    if(debug) cat("nrow(d[[i]]) = ", nrow(d[[i]]), "\n")
+    
+    tmp1 = evaluation(d[[i]], -1, type, debug = debug)
+    tmp2 = evaluation(d[[i]], 2, type)
+    tmp3 = evaluation(d[[i]], 4, type)
+    
+    r1 = rbind(r1, tmp1)
+    r2 = rbind(r2, tmp2)
+    r3 = rbind(r3, tmp3)
+    
+    count1 = r1 %>% group_by(name, n) %>% 
+      summarise(n()) %>% filter(`n()` > 1)
+    count2 = r2 %>% group_by(name, n) %>% 
+      summarise(n()) %>% filter(`n()` > 1)
+    count3 = r3 %>% group_by(name, n) %>% 
+      summarise(n()) %>% filter(`n()` > 1)
+    
+    r1 = r1 %>% 
+      filter(name %in% count1$name) %>% 
+      group_by(name, n, method) %>% 
+      summarise_if(is.numeric, sum) %>%
+      data.frame() 
+    r2 = r2 %>% 
+      filter(name %in% count2$name) %>% 
+      group_by(name, n, method) %>% 
+      summarise_if(is.numeric, sum) %>%
+      data.frame()
+    r3 = r3 %>% 
+      filter(name %in% count3$name) %>% 
+      group_by(name, n, method) %>% 
+      summarise_if(is.numeric, sum) %>%
+      data.frame()
+    print(r1)
+  }
+  
+  r1[4:length(r1)] = r1[4:length(r1)] / length(d)
+  r2[4:length(r2)] = r2[4:length(r2)] / length(d)
+  r3[4:length(r3)] = r3[4:length(r3)] / length(d)
+  
+  if(type == "binary"){
+    r1.models = r1 %>% group_by(method) %>% slice(which.max(precision)) %>% pull(name)
+    r2.models = r2 %>% group_by(method) %>% slice(which.max(precision)) %>% pull(name)
+    r3.models = r3 %>% group_by(method) %>% slice(which.max(precision)) %>% pull(name)
+  }
+  else{
+    r1.models = r1 %>% group_by(method) %>% slice(which.min(RMSE)) %>% pull(name)
+    r2.models = r2 %>% group_by(method) %>% slice(which.min(RMSE)) %>% pull(name)
+    r3.models = r3 %>% group_by(method) %>% slice(which.min(RMSE)) %>% pull(name)
+  }
+  
+  r1 = r1 %>% filter(name %in% r1.models) %>% mutate(protocol = "one")
+  r2 = r2 %>% filter(name %in% r2.models) %>% mutate(protocol = "two")
+  r3 = r3 %>% filter(name %in% r3.models) %>% mutate(protocol = "three")
+  
+  r = rbind(r1,r2,r3)
+  r$protocol = factor(r$protocol, levels = c("one", "two", "three"))
+  
+  return(r)
+}
+```
+
+## Binary Predictions
+
+The models used to build a recommender system for binary ratings can be seen in the function *evaluation*. We present the results of applying these models to the whole binary ratings matrix.
+
+The AR method fails for some parameters since there are no rules with the given combination of minimum support and minimum confidence.
+
+```{r binary, results = "hide", message = F}
+data = reviews %>% select(critic, id)
+r = recommend(data)
+```
+
+```{r, fig.align = "center", echo=F}
+ggplot(r, aes(x = recall, y = precision, col = name, group = name)) +
+  geom_point() + geom_line() +
+  facet_grid(~protocol)
+```
+
+We note that not all protocols choose the same model for each method. We note also that the protocols two and three give in general better precision but worse recall than protocol one. This is due to the fact that protocols two and three predict with only two and four known ratings, respectively, which means that they have more chances of hitting the remaining ratings when they make 1, 2 and 5 predictions. This also means that the recall will be closer to zero because there will be a lot of ratings that the algorithm will not be able to predict, as it can only give up to 5 recommendations when there are sometimes hundreds of possible, correct recommendations. 
+
+In order to use the review date information in our recommendations, we attempted to use the first 90% of reviews for training and the remaining for testing. We also attempted to implement a sliding window and an expanding window to make recommendations. These approaches failed due to the fact that the *evaluationScheme* function always randomly samples the data when creating the training and testing sets.
+
+We decided, therefore, to separate the data by year of review and average the results for each year. This was done using the *context* function. We also separated the data by month to see if we obtained better results.
+
+As before, the AR method fails at times, so we removed from the results the models that failed for at least one category. This is true for every use of the *context* function.
+
+```{r by_year, results = 'hide', message = F} 
+data = reviews %>% select(critic, id, date)
+d = split(data, year(data$date))
+r1 = context(d)
+```
+
+
+```{r by_month, results = 'hide', message = F}
+data = reviews %>% select(critic, id, date)
+d = split(data, month(data$date))
+r = context(d)
+```
+
+```{r by_month_results, echo=F}
+ggplot(r, aes(x = recall, y = precision, col = name, group = name)) +
+  geom_point() + geom_line() +
+  facet_grid(~protocol) +
+  ggtitle("Binary recommendation systems having the year as context")
+
+ggplot(r1, aes(x = recall, y = precision, col = name, group = name)) +
+  geom_point() + geom_line() +
+  facet_grid(~protocol) +
+  ggtitle("Binary recommendation systems having the month as context")
+```
+
+Both the division per year and per month show an increase in precision and recall in the first protocol and an increase in recall in the second and third protocols when compared to the whole dataset. 
+
+
+
+## Real Predictions
+
+The models used to build a recommender system for real ratings can be seen in the function *evaluation*. We present the results of applying these models to the whole real ratings matrix.
+
+```{r real, results = 'hide', message = F}
+data = reviews %>% select(critic, id, rating) %>% na.omit()
+r = recommend(data, "real")
+```
+
+```{r real_results, echo = F, fig.align = "center"}
+ggplot(r, aes(x = protocol, y = RMSE, col = name)) + 
+  geom_point()
+```
+
+The lowest RMSE is achieved with the first protocol. This is likely due to the fact that in this protocol all but one rating is used to predict a single rating, while in the other protocols the number of ratings used is lower.
+
+We also split the data by year and then by month to see if it improved the RMSE.
+
+
+```{r, results = 'hide', message = F}
+data = reviews %>% select(critic, id, rating, date) %>% na.omit()
+d = split(data, year(data$date))
+r1 = context(d, "real")
+```
+
+```{r, results = 'hide', message = F}
+data = reviews %>% select(critic, id, rating, date) %>% na.omit()
+d = split(data, month(data$date))
+r = context(d, "real")
+```
+
+```{r, echo = F}
+ggplot(r1, aes(x = protocol, y = RMSE, col = name)) + 
+  geom_point() +
+  ggtitle("Real recommendation systems having the year as context")
+
+ggplot(r, aes(x = protocol, y = RMSE, col = name)) + 
+  geom_point() +
+  ggtitle("Real recommendation systems having the month as context")
+```
+
+
+The results of the divided data are quite similar to the results for the whole data so we consider there isn't an improvement in RMSE.
+
+# Context-aware recommendation systems
+
+Imagine that a user is in the drama section of, say, Netflix. In this case, it wouldn't make sense to recommend movies that don't relate to that genre. In other words, context is important because a user might be expecting to receive recommendations that relate to some context that he might be interested in.
+
+There are multiple ways to do context-aware recommendation systems. We chose to simply divide the dataset according to the chosen context and produce a recommendation system to that subset of data.
+
+To test the power of context in this dataset, we chose two attributes -- genre and studio. We then used the *context* function mentioned in the last section in order to have an average of how the algorithms behave in the different contexts of each attribute. Note that these metrics vary for each category and it can be useful to look at the metrics of a model in a single category rather than the average of an attribute.
+
+```{r, results = 'hide', message = F}
+
+big_data = reviews %>% merge(movies, by = "id")
+
+data = big_data %>% select(critic, id, genre)
+d = split(data, data$genre)
+r = context(d)
+
+```
+
+```{r, echo = F, fig.align = "center"}
+
+ggplot(r, aes(x = recall, y = precision, col = name, group = name)) +
+  geom_point() + geom_line() +
+  facet_grid(~protocol) + 
+  ggtitle("Binary recommendation systems having the movie genre as context")
+
+```
+
+```{r, results = "hide", message = F}
+data = big_data %>% select(critic, id, rating.x, genre) %>% na.omit()
+d = split(data, data$genre)
+r = context(d, "real")
+```
+
+```{r, echo=F, fig.align = "center"}
+ggplot(r, aes(x = protocol, y = RMSE, col = name)) + 
+  geom_point() + 
+  ggtitle("Real recommendation systems having the movie genre as context")
+```
+
+```{r, results = "hide", message = F}
+data = big_data %>% select(critic, id, studio)
+data = data[-which(data$studio == ""),]
+d = split(data, data$studio)
+r = context(d)
+```
+
+```{r, echo=F, fig.align = "center"}
+ggplot(r, aes(x = recall, y = precision, col = name, group = name)) +
+  geom_point() + geom_line() +
+  facet_grid(~protocol) + 
+  ggtitle("Binary recommendation systems having the movie studio as context")
+```
+
+```{r, results = "hide", message = F}
+data = big_data %>% select(critic, id, rating.x, studio) %>% na.omit()
+data = data[-which(data$studio == ""),]
+d = split(data, data$studio)
+r = context(d, "real")
+```
+
+```{r, echo=F, fig.align = "center"}
+ggplot(r, aes(x = protocol, y = RMSE, col = name)) + 
+  geom_point() + 
+  ggtitle("Real recommendation systems having the movie studio as context")
+```
+
+As can be see in the figures above, the context-aware recomendation systems achieve a better score than the systems that consider no context at all for binary ratings. The real ratings don't show a significant difference in RMSE compared to the systems with no context.
+
+
+
+# Conclusions
+
+In this work, we managed to, after data preprocessing, compare the possible models for movies recommendation by the quality of their predictions, both for binary and real matrices. Given the results, we conclude that for binary ratings, a UBCF or IBCF model seems to be the best for this data. For real ratings, Popular, UBCF and IBCF seem to achieve all a similar score, so we are not able to say which is the best one. 
+We also looked into context-aware recommendation systems, comparing models that took into account some context of the data -- genre and studio of the movie -- and saw what improvements that context brought to our models, concluding that it brought quality only to the binary predictions.
+
+In future work, the reason why the AR method produced predictions that the user had already seen should assessed and taken care of. More data could also be valuable, in particular to the context-aware systems, since one could be able to create systems based on multiple contexts at the same time.
