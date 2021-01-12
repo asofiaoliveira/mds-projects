@@ -5,5 +5,5 @@ Each folder corresponds to a different subject. Note that most of these works ar
 
 Folder names:
 
-**ATDS** - Advanced Topics in Data Science
-**DSM** - Data Stream Mining
+* **ATDS** - Advanced Topics in Data Science
+* **DSM** - Data Stream Mining
