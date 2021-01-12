@@ -7,3 +7,4 @@ Folder names:
 
 * **ATDS** - Advanced Topics in Data Science
 * **DSM** - Data Stream Mining
+* **TAIA** - Advanced Topics in Artificial Intelligence
