@@ -5,6 +5,8 @@ Each folder corresponds to a different subject. Note that most of these works ar
 
 Folder names:
 
-* **ATDS** - Advanced Topics in Data Science
-* **DSM** - Data Stream Mining
-* **TAIA** - Advanced Topics in Artificial Intelligence
+* **ATDS** - Advanced Topics in Data Science (1st year, 2nd semester)
+* **DSM** - Data Stream Mining (2nd year, 2nd semester)
+* **TAIA** - Advanced Topics in Artificial Intelligence (1st year, 2nd semester)
+* **IDS** - Introduction to Data Science (1st year, 1st semester)
+* **EAD** - Statistics and Data Analysis (1st year, 2nd semester)
