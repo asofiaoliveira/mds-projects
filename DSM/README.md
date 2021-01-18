@@ -9,7 +9,7 @@ Some notes:
 - you can choose how often to update the graph
 - if you run in the terminal, you must comment line 8 of preproc.py
 
-
+This project was developed by myself and Fábio Pereira.
 
 
 ## References
